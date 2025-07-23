@@ -1,0 +1,66 @@
+from flask import Flask, jsonify
+from datetime import datetime, timedelta
+from models import db, Product, Inventory, Supplier, Sale, Warehouse  # Assuming models are defined
+from sqlalchemy import func
+
+app = Flask(__name__)
+
+@app.route('/api/companies/<int:company_id>/alerts/low-stock', methods=['GET'])
+def low_stock_alert(company_id):
+    alerts = []
+
+    # Step 1: Get product inventories from all warehouses of the company
+    inventories = db.session.query(
+        Inventory, Product, Warehouse
+    ).join(Product).join(Warehouse).filter(
+        Warehouse.company_id == company_id
+    ).all()
+
+    for inventory, product, warehouse in inventories:
+        # Step 2: Get recent sales for the product (last 30 days)
+        recent_sales = db.session.query(Sale).filter(
+            Sale.product_id == product.id,
+            Sale.sale_date >= datetime.utcnow() - timedelta(days=30)
+        ).all()
+
+        if not recent_sales:
+            continue  # Skip this product if no sales activity
+
+        # Step 3: Calculate average daily sales
+        total_quantity_sold = sum(sale.quantity for sale in recent_sales)
+        avg_daily_sales = total_quantity_sold / 30 if total_quantity_sold > 0 else 0
+
+        if avg_daily_sales == 0:
+            continue
+
+        # Step 4: Check if stock is below threshold
+        if inventory.quantity < product.low_stock_threshold:
+            # Step 5: Estimate days until stock runs out
+            days_until_stockout = round(inventory.quantity / avg_daily_sales)
+
+            # Step 6: Get supplier info (assuming one supplier per product)
+            supplier = db.session.query(Supplier).join(
+                Product.suppliers
+            ).filter(Product.id == product.id).first()
+
+            # Step 7: Add alert entry
+            alerts.append({
+                "product_id": product.id,
+                "product_name": product.name,
+                "sku": product.sku,
+                "warehouse_id": warehouse.id,
+                "warehouse_name": warehouse.name,
+                "current_stock": inventory.quantity,
+                "threshold": product.low_stock_threshold,
+                "days_until_stockout": days_until_stockout,
+                "supplier": {
+                    "id": supplier.id if supplier else None,
+                    "name": supplier.name if supplier else "N/A",
+                    "contact_email": supplier.contact_email if supplier else "N/A"
+                }
+            })
+
+    return jsonify({
+        "alerts": alerts,
+        "total_alerts": len(alerts)
+    })
