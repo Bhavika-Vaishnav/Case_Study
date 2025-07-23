@@ -1,0 +1,48 @@
+from flask import request, jsonify
+from decimal import Decimal
+from sqlalchemy.exc import IntegrityError
+
+@app.route('/api/products', methods=['POST'])
+def create_product():
+    data = request.json
+
+    #1. Check if required fields are present
+    required_fields = ['name', 'sku', 'price', 'warehouse_id', 'initial_quantity']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({"error": f"Missing field: {field}"}), 400
+
+    try:
+        #2. Check for duplicate SKU
+        existing_product = Product.query.filter_by(sku=data['sku']).first()
+        if existing_product:
+            return jsonify({"error": "SKU already exists"}), 400
+
+        #3. Convert price safely to Decimal
+        price = Decimal(str(data['price']))
+
+        #4. Create product and inventory safely
+        product = Product(
+            name=data['name'],
+            sku=data['sku'],
+            price=price
+        )
+        db.session.add(product)
+        db.session.flush()  # Get product.id without full commit
+
+        inventory = Inventory(
+            product_id=product.id,
+            warehouse_id=data['warehouse_id'],
+            quantity=data['initial_quantity']
+        )
+        db.session.add(inventory)
+        db.session.commit()
+
+        return jsonify({"message": "Product created", "product_id": product.id}), 201
+
+    except IntegrityError as e:
+        db.session.rollback()
+        return jsonify({"error": "Database error", "details": str(e)}), 500
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Something went wrong", "details": str(e)}), 500
